@@ -557,10 +557,10 @@ export class GameEngine {
   }
 
   private updatePaddles(dt: number) {
-    const smoothFactor = GAME_CONFIG.PADDLE.SMOOTH_FACTOR;
+    const lerpAlpha = 1 - Math.exp(-22 * dt); // Buttery smooth 60fps exponential decay
     const updatePad = (p: Paddle) => {
-      p.x += (p.targetX - p.x) * (smoothFactor * 2.2);
-      p.angle += (p.targetAngle - p.angle) * (smoothFactor * 2.2);
+      p.x += (p.targetX - p.x) * lerpAlpha;
+      p.angle += (p.targetAngle - p.angle) * lerpAlpha;
       if (p.boostTimer > 0) {
         p.boostTimer -= dt;
         if (p.boostTimer <= 0) p.isBoosting = false;

@@ -12,26 +12,26 @@ export class HandTracker {
   private stream: MediaStream | null = null;
   private isRunning: boolean = false;
   private isInitializing: boolean = false;
+  private isProcessing: boolean = false;
   private lastVideoTime: number = -1;
-  private animFrameId: number | null = null;
+  private timerId: number | null = null;
   private listeners: Set<TrackingCallback> = new Set();
   
   // Smoothing buffers for Left and Right hands
   private smoothedLeft: HandData | null = null;
   private smoothedRight: HandData | null = null;
-  private smoothingFactor: number = 0.45; // Balance between instant response & smooth stability
+  private smoothingFactor: number = 0.4;
 
   // Performance & FPS tracking
   private lastFpsUpdate: number = performance.now();
   private frameCount: number = 0;
   private currentFps: number = 0;
 
-  // Configuration
+  // Configuration (Ultra-lightweight dimensions for Chromebooks)
   private mirror: boolean = true;
-  private downscaleWidth: number = 320;
-  private downscaleHeight: number = 240;
-  private ecoMode: boolean = false;
-  private lastInferenceTime: number = 0;
+  private downscaleWidth: number = 240;
+  private downscaleHeight: number = 180;
+  private ecoMode: boolean = true; // Default to eco mode for high performance
 
   private state: TrackingState = {
     hands: [],
@@ -54,11 +54,11 @@ export class HandTracker {
   public setEcoMode(eco: boolean) {
     this.ecoMode = eco;
     if (eco) {
-      this.downscaleWidth = 256;
-      this.downscaleHeight = 192;
+      this.downscaleWidth = 192;
+      this.downscaleHeight = 144;
     } else {
-      this.downscaleWidth = 320;
-      this.downscaleHeight = 240;
+      this.downscaleWidth = 240;
+      this.downscaleHeight = 180;
     }
     if (this.offscreenCanvas) {
       this.offscreenCanvas.width = this.downscaleWidth;
@@ -99,13 +99,13 @@ export class HandTracker {
           },
           runningMode: 'VIDEO',
           numHands: 2,
-          minHandDetectionConfidence: 0.45,
-          minHandPresenceConfidence: 0.45,
-          minTrackingConfidence: 0.45,
+          minHandDetectionConfidence: 0.4,
+          minHandPresenceConfidence: 0.4,
+          minTrackingConfidence: 0.4,
         });
       }
 
-      // 2. Initialize Camera Stream
+      // 2. Initialize Camera Stream with low resolution to save CPU
       await this.startCamera(deviceId);
 
       this.state.isReady = true;
@@ -132,12 +132,13 @@ export class HandTracker {
       this.stream = null;
     }
 
+    // Request low resolution from camera directly (huge CPU saving on low-end hardware)
     const constraints: MediaStreamConstraints = {
       video: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
-        width: { ideal: 640 },
-        height: { ideal: 480 },
-        frameRate: { ideal: 30, max: 30 },
+        width: { ideal: 320, max: 480 },
+        height: { ideal: 240, max: 360 },
+        frameRate: { ideal: 24, max: 30 },
         facingMode: 'user',
       },
       audio: false,
@@ -169,15 +170,14 @@ export class HandTracker {
   public startLoop() {
     if (this.isRunning) return;
     this.isRunning = true;
-    this.lastInferenceTime = performance.now();
-    this.processFrame();
+    this.scheduleNextInference(0);
   }
 
   public stop() {
     this.isRunning = false;
-    if (this.animFrameId !== null) {
-      cancelAnimationFrame(this.animFrameId);
-      this.animFrameId = null;
+    if (this.timerId !== null) {
+      clearTimeout(this.timerId);
+      this.timerId = null;
     }
     if (this.stream) {
       this.stream.getTracks().forEach((t) => t.stop());
@@ -185,11 +185,17 @@ export class HandTracker {
     }
   }
 
-  private processFrame = () => {
+  private scheduleNextInference(delayMs: number) {
+    if (!this.isRunning) return;
+    this.timerId = window.setTimeout(this.runInference, delayMs);
+  }
+
+  // Non-blocking asynchronous inference loop
+  private runInference = () => {
     if (!this.isRunning) return;
 
-    const now = performance.now();
-    const minInterval = this.ecoMode ? 40 : 25; // Throttling: 25fps normal, 20fps eco
+    const tStart = performance.now();
+    let nextDelay = this.ecoMode ? 50 : 35; // Target 20-28 Hz tracking
 
     if (
       this.video &&
@@ -197,44 +203,51 @@ export class HandTracker {
       this.landmarker &&
       this.offscreenCtx &&
       this.offscreenCanvas &&
-      now - this.lastInferenceTime >= minInterval
+      !this.isProcessing
     ) {
-      this.lastInferenceTime = now;
+      this.isProcessing = true;
 
-      // Downscale video frame to offscreen canvas
-      this.offscreenCtx.drawImage(
-        this.video,
-        0,
-        0,
-        this.downscaleWidth,
-        this.downscaleHeight
-      );
+      try {
+        // Downscale video frame to offscreen canvas
+        this.offscreenCtx.drawImage(
+          this.video,
+          0,
+          0,
+          this.downscaleWidth,
+          this.downscaleHeight
+        );
 
-      const videoTime = this.video.currentTime;
-      if (videoTime !== this.lastVideoTime) {
-        this.lastVideoTime = videoTime;
-        try {
+        const videoTime = this.video.currentTime;
+        if (videoTime !== this.lastVideoTime) {
+          this.lastVideoTime = videoTime;
           const results = this.landmarker.detectForVideo(
             this.offscreenCanvas,
-            now
+            tStart
           );
           this.handleDetectionResults(results);
-        } catch {
-          // Ignore transient detection errors
         }
-      }
 
-      // Track FPS
-      this.frameCount++;
-      if (now - this.lastFpsUpdate >= 1000) {
-        this.currentFps = Math.round((this.frameCount * 1000) / (now - this.lastFpsUpdate));
-        this.state.fps = this.currentFps;
-        this.frameCount = 0;
-        this.lastFpsUpdate = now;
+        // Measure time spent in inference to adaptively throttle
+        const elapsed = performance.now() - tStart;
+        // Keep CPU usage below ~35% by sleeping at least 1.5x of inference duration
+        nextDelay = Math.max(nextDelay, Math.round(elapsed * 1.5));
+
+        // Track Tracking FPS
+        this.frameCount++;
+        if (tStart - this.lastFpsUpdate >= 1000) {
+          this.currentFps = Math.round((this.frameCount * 1000) / (tStart - this.lastFpsUpdate));
+          this.state.fps = this.currentFps;
+          this.frameCount = 0;
+          this.lastFpsUpdate = tStart;
+        }
+      } catch {
+        // Ignore transient errors
+      } finally {
+        this.isProcessing = false;
       }
     }
 
-    this.animFrameId = requestAnimationFrame(this.processFrame);
+    this.scheduleNextInference(nextDelay);
   };
 
   private handleDetectionResults(results: {
@@ -249,14 +262,12 @@ export class HandTracker {
         const rawLandmarks = results.landmarks[i];
         const handednessCategory = results.handedness?.[i]?.[0];
         
-        // MediaPipe reports from camera perspective. In selfie/mirror mode, left is right.
         let detectedHand = (handednessCategory?.categoryName || handednessCategory?.displayName || (i === 0 ? 'Right' : 'Left')) as 'Left' | 'Right';
         
         if (this.mirror) {
           detectedHand = detectedHand === 'Left' ? 'Right' : 'Left';
         }
 
-        // Apply mirror to X coordinates if needed
         const landmarks: HandLandmark[] = rawLandmarks.map((lm) => ({
           x: this.mirror ? 1.0 - lm.x : lm.x,
           y: lm.y,
@@ -291,7 +302,6 @@ export class HandTracker {
     let rightRaw: HandData | null = null;
 
     if (rawHands.length === 1) {
-      // Single hand detected: if on left half of screen, treat as left, else right (or primary)
       const h = rawHands[0];
       if (h.handedness === 'Left' || h.palmCenter.x < 0.45) {
         leftRaw = h;
@@ -299,7 +309,6 @@ export class HandTracker {
         rightRaw = h;
       }
     } else if (rawHands.length >= 2) {
-      // Sort by X position: leftmost is Left, rightmost is Right
       const sorted = [...rawHands].sort((a, b) => a.palmCenter.x - b.palmCenter.x);
       leftRaw = sorted[0];
       rightRaw = sorted[1];

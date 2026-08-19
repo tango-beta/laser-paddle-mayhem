@@ -2,10 +2,10 @@ import type { Particle } from '../types';
 
 export class ParticleSystem {
   private pool: Particle[] = [];
-  private poolSize: number = 300;
+  private poolSize: number = 60;
   public screenShake: number = 0;
 
-  constructor(size: number = 300) {
+  constructor(size: number = 60) {
     this.poolSize = size;
     for (let i = 0; i < this.poolSize; i++) {
       this.pool.push({
@@ -54,11 +54,11 @@ export class ParticleSystem {
     return null;
   }
 
-  public triggerScreenShake(amount: number = 8) {
+  public triggerScreenShake(amount: number = 6) {
     this.screenShake = Math.max(this.screenShake, amount);
   }
 
-  public emitSparks(x: number, y: number, color: string, count: number = 12, speed: number = 4) {
+  public emitSparks(x: number, y: number, color: string, count: number = 8, speed: number = 3.5) {
     for (let i = 0; i < count; i++) {
       const p = this.getFreeParticle();
       if (!p) break;
@@ -71,17 +71,17 @@ export class ParticleSystem {
       p.y = y;
       p.vx = Math.cos(angle) * velocity;
       p.vy = Math.sin(angle) * velocity;
-      p.size = Math.random() * 3 + 2;
+      p.size = Math.random() * 2.5 + 1.5;
       p.color = color;
-      p.shape = Math.random() > 0.5 ? 'spark' : 'circle';
+      p.shape = 'circle';
       p.life = 1.0;
       p.maxLife = 1.0;
-      p.decay = Math.random() * 0.03 + 0.025;
-      p.gravity = 0.08;
+      p.decay = Math.random() * 0.04 + 0.03;
+      p.gravity = 0.06;
     }
   }
 
-  public emitShockwave(x: number, y: number, color: string, maxRadius: number = 35) {
+  public emitShockwave(x: number, y: number, color: string, maxRadius: number = 30) {
     const p = this.getFreeParticle();
     if (!p) return;
 
@@ -91,11 +91,11 @@ export class ParticleSystem {
     p.vx = 0;
     p.vy = 0;
     p.size = 2;
-    p.maxLife = maxRadius; // Use maxLife as target radius
+    p.maxLife = maxRadius;
     p.life = 0;
     p.color = color;
     p.shape = 'ring';
-    p.decay = 1.5; // expansion rate per frame
+    p.decay = 2.0;
     p.gravity = 0;
   }
 
@@ -106,15 +106,15 @@ export class ParticleSystem {
     p.active = true;
     p.x = x;
     p.y = y;
-    p.vx = (Math.random() - 0.5) * 0.5;
-    p.vy = -1.5;
-    p.size = 14;
+    p.vx = 0;
+    p.vy = -1.2;
+    p.size = 13;
     p.color = color;
     p.shape = 'text';
     p.text = text;
     p.life = 1.0;
     p.maxLife = 1.0;
-    p.decay = 0.02;
+    p.decay = 0.025;
     p.gravity = 0;
   }
 
@@ -123,23 +123,22 @@ export class ParticleSystem {
     if (!p) return;
 
     p.active = true;
-    p.x = x + (Math.random() - 0.5) * 4;
+    p.x = x;
     p.y = y;
-    p.vx = (Math.random() - 0.5) * 0.5;
-    p.vy = (Math.random() * 0.5 + 0.5);
-    p.size = Math.random() * 3 + 2;
+    p.vx = 0;
+    p.vy = 0.5;
+    p.size = 2;
     p.color = color;
     p.shape = 'circle';
     p.life = 1.0;
     p.maxLife = 1.0;
-    p.decay = 0.08;
+    p.decay = 0.1;
     p.gravity = 0;
   }
 
   public update() {
-    // Screen shake decay
     if (this.screenShake > 0) {
-      this.screenShake *= 0.88;
+      this.screenShake *= 0.85;
       if (this.screenShake < 0.2) this.screenShake = 0;
     }
 
@@ -179,29 +178,19 @@ export class ParticleSystem {
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
         ctx.fill();
-      } else if (p.shape === 'spark') {
-        ctx.globalAlpha = Math.max(0, p.life);
-        ctx.strokeStyle = p.color;
-        ctx.lineWidth = p.size * 0.7;
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y);
-        ctx.lineTo(p.x - p.vx * 2, p.y - p.vy * 2);
-        ctx.stroke();
       } else if (p.shape === 'ring') {
         const alpha = Math.max(0, 1 - p.life);
         ctx.globalAlpha = alpha;
         ctx.strokeStyle = p.color;
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
         ctx.stroke();
       } else if (p.shape === 'text' && p.text) {
         ctx.globalAlpha = Math.max(0, p.life);
         ctx.fillStyle = p.color;
-        ctx.font = 'bold 13px "Orbitron", sans-serif';
+        ctx.font = 'bold 12px "Orbitron", sans-serif';
         ctx.textAlign = 'center';
-        ctx.shadowColor = p.color;
-        ctx.shadowBlur = 6;
         ctx.fillText(p.text, p.x, p.y);
       }
       ctx.restore();
