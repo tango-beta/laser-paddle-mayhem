@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type React from 'react';
 import { GameEngine } from '../engine/GameEngine';
 import type { ActivePowerUp, GameMode, GameState, GameStats } from '../types';
 import { GAME_CONFIG } from '../config/gameConfig';
@@ -77,8 +78,7 @@ export const GameCanvas: React.FC = () => {
       const success = await handTracker.initialize();
       setIsInitializingCamera(false);
       if (!success) {
-        // Fallback to mouse mode automatically
-        console.log('Starting with mouse fallback');
+        console.log('Camera init fallback to mouse');
       }
     }
     if (engineRef.current) {
@@ -154,9 +154,9 @@ export const GameCanvas: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className="relative w-screen h-screen flex items-center justify-center bg-[#070712] overflow-hidden scanlines"
+      className="relative w-screen h-screen flex items-center justify-center bg-[#070712] overflow-hidden"
     >
-      {/* Game Canvas */}
+      {/* Game Canvas Box */}
       <div className="relative aspect-[4/3] w-full max-w-[960px] max-h-[100vh] shadow-2xl overflow-hidden rounded-none sm:rounded-xl border border-cyber-border/40">
         <canvas
           ref={canvasRef}
@@ -165,6 +165,9 @@ export const GameCanvas: React.FC = () => {
           onPointerUp={handlePointerUp}
           className="w-full h-full block cursor-crosshair touch-none"
         />
+
+        {/* Scanlines Effect (pure visual overlay) */}
+        <div className="absolute inset-0 scanlines-overlay pointer-events-none z-10" />
 
         {/* In-Game HUD overlay */}
         {gameState !== 'menu' && (
@@ -209,7 +212,7 @@ export const GameCanvas: React.FC = () => {
 
         {/* Pause Overlay */}
         {gameState === 'paused' && (
-          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm">
             <div className="cyber-card p-6 rounded-xl border border-cyber-neonCyan text-center">
               <h3 className="font-display text-2xl font-black text-cyber-neonCyan mb-2">GAME PAUSED</h3>
               <button

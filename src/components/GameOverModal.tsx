@@ -1,4 +1,4 @@
-import React from 'react';
+import type React from 'react';
 import type { GameState, GameStats } from '../types';
 import { RotateCcw, Trophy, Home, Sparkles, Zap } from 'lucide-react';
 

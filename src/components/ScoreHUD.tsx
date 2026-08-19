@@ -1,4 +1,4 @@
-import React from 'react';
+import type React from 'react';
 import type { ActivePowerUp, GameMode, GameStats } from '../types';
 import { Heart, Pause, Play, Volume2, VolumeX, Settings, Zap } from 'lucide-react';
 

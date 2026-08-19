@@ -1,4 +1,4 @@
-import React from 'react';
+import type React from 'react';
 import { X, Hand, RotateCw, Zap, Shield, Sparkles } from 'lucide-react';
 
 interface HelpModalProps {

@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type React from 'react';
 import { Camera, Check, Cpu, FlipHorizontal, X } from 'lucide-react';
 import { handTracker } from '../vision/HandTracker';
 import { soundSynth } from '../audio/SoundSynth';

@@ -1,4 +1,4 @@
-import React from 'react';
+import type React from 'react';
 import type { GameMode } from '../types';
 import { Sparkles, Trophy, Video, MousePointer, Info } from 'lucide-react';
 
