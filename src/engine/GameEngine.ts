@@ -14,7 +14,6 @@ import type {
 } from '../types';
 import { GAME_CONFIG } from '../config/gameConfig';
 import { handTracker } from '../vision/HandTracker';
-import { GestureRecognizer } from '../vision/GestureRecognizer';
 import { soundSynth } from '../audio/SoundSynth';
 import { musicSynth } from '../audio/MusicSynth';
 import { Physics } from './Physics';
@@ -34,6 +33,8 @@ export class GameEngine {
   private particles: ParticleSystem;
   private animFrameId: number | null = null;
   private lastTime: number = 0;
+  private accumulator: number = 0;
+  private readonly FIXED_TIMESTEP: number = 1 / 60; // Locked 60Hz physics (0.01666s)
   private isRunning: boolean = false;
 
   // Game States
@@ -65,9 +66,8 @@ export class GameEngine {
   private lastHitTime: number = 0;
   private comboTimeout: number = GAME_CONFIG.SCORING.COMBO_TIMEOUT_MS;
 
-  // Entities
+  // Entities (1 Primary Paddle + optional AI paddle in duel)
   private paddles: { left: Paddle; right: Paddle; primary: Paddle; ai?: Paddle };
-  private isDualHand: boolean = false;
   private balls: Ball[] = [];
   private bricks: Brick[] = [];
   private powerUps: PowerUpItem[] = [];
@@ -77,7 +77,6 @@ export class GameEngine {
   // Special ability states
   private bottomShieldActive: boolean = false;
   private bottomShieldTimer: number = 0;
-  private clapCooldown: number = 0;
   private laserFireCooldown: number = 0;
 
   // Listeners
@@ -88,19 +87,37 @@ export class GameEngine {
     this.renderer = new Renderer(canvas);
     this.particles = new ParticleSystem(60);
 
-    // Initialize Paddles
+    // Initialize Paddles (Primary Player Paddle centered)
     this.paddles = {
-      left: {
-        id: 'left',
-        x: GAME_CONFIG.CANVAS_WIDTH * 0.3,
+      primary: {
+        id: 'primary',
+        x: GAME_CONFIG.CANVAS_WIDTH * 0.5,
         y: GAME_CONFIG.PADDLE.Y_POSITION,
-        width: GAME_CONFIG.PADDLE.DEFAULT_WIDTH,
+        width: 140, // Generous single paddle width
         height: GAME_CONFIG.PADDLE.HEIGHT,
-        targetX: GAME_CONFIG.CANVAS_WIDTH * 0.3,
+        targetX: GAME_CONFIG.CANVAS_WIDTH * 0.5,
         targetY: GAME_CONFIG.PADDLE.Y_POSITION,
         angle: 0,
         targetAngle: 0,
-        color: GAME_CONFIG.PADDLE.COLOR_LEFT,
+        color: GAME_CONFIG.PADDLE.COLOR_PRIMARY,
+        isShooting: false,
+        isBoosting: false,
+        boostTimer: 0,
+        laserCooldown: 0,
+        powerWideTimer: 0,
+        laserAmmoTimer: 0,
+      },
+      left: {
+        id: 'left',
+        x: GAME_CONFIG.CANVAS_WIDTH * 0.5,
+        y: GAME_CONFIG.PADDLE.Y_POSITION,
+        width: 140,
+        height: GAME_CONFIG.PADDLE.HEIGHT,
+        targetX: GAME_CONFIG.CANVAS_WIDTH * 0.5,
+        targetY: GAME_CONFIG.PADDLE.Y_POSITION,
+        angle: 0,
+        targetAngle: 0,
+        color: GAME_CONFIG.PADDLE.COLOR_PRIMARY,
         isShooting: false,
         isBoosting: false,
         boostTimer: 0,
@@ -110,27 +127,9 @@ export class GameEngine {
       },
       right: {
         id: 'right',
-        x: GAME_CONFIG.CANVAS_WIDTH * 0.7,
-        y: GAME_CONFIG.PADDLE.Y_POSITION,
-        width: GAME_CONFIG.PADDLE.DEFAULT_WIDTH,
-        height: GAME_CONFIG.PADDLE.HEIGHT,
-        targetX: GAME_CONFIG.CANVAS_WIDTH * 0.7,
-        targetY: GAME_CONFIG.PADDLE.Y_POSITION,
-        angle: 0,
-        targetAngle: 0,
-        color: GAME_CONFIG.PADDLE.COLOR_RIGHT,
-        isShooting: false,
-        isBoosting: false,
-        boostTimer: 0,
-        laserCooldown: 0,
-        powerWideTimer: 0,
-        laserAmmoTimer: 0,
-      },
-      primary: {
-        id: 'primary',
         x: GAME_CONFIG.CANVAS_WIDTH * 0.5,
         y: GAME_CONFIG.PADDLE.Y_POSITION,
-        width: GAME_CONFIG.PADDLE.DEFAULT_WIDTH * 1.2,
+        width: 140,
         height: GAME_CONFIG.PADDLE.HEIGHT,
         targetX: GAME_CONFIG.CANVAS_WIDTH * 0.5,
         targetY: GAME_CONFIG.PADDLE.Y_POSITION,
@@ -156,7 +155,7 @@ export class GameEngine {
 
     // Subscribe to hand tracking
     this.unsubscribeTracker = handTracker.subscribe((state) => {
-      this.handleHandTrackingUpdate(state.hands, state.leftHand, state.rightHand);
+      this.handleHandTrackingUpdate(state.hands);
     });
   }
 
@@ -172,35 +171,19 @@ export class GameEngine {
     );
   }
 
-  // Multi-Touch Input Handler (Supports Chromebook Touchscreens)
+  // Touchscreen Input Handler
   public setTouchInput(touches: Array<{ x: number; y: number }>) {
     this.activeInput = 'touch';
     this.lastDirectInputTime = performance.now();
     const width = GAME_CONFIG.CANVAS_WIDTH;
 
-    if (touches.length === 1) {
+    if (touches.length > 0) {
       const touch = touches[0];
-      this.isDualHand = false;
       this.paddles.primary.targetX = Math.max(
         this.paddles.primary.width / 2,
         Math.min(width - this.paddles.primary.width / 2, touch.x)
       );
-    } else if (touches.length >= 2) {
-      this.isDualHand = true;
-      const sorted = [...touches].sort((a, b) => a.x - b.x);
-      const leftTouch = sorted[0];
-      const rightTouch = sorted[1];
-
-      this.paddles.left.targetX = Math.max(
-        this.paddles.left.width / 2,
-        Math.min(width * 0.7, leftTouch.x)
-      );
-      this.paddles.right.targetX = Math.max(
-        width * 0.3,
-        Math.min(width - this.paddles.right.width / 2, rightTouch.x)
-      );
     }
-
     this.notify();
   }
 
@@ -210,7 +193,6 @@ export class GameEngine {
     this.lastDirectInputTime = performance.now();
 
     if (this.state === 'playing') {
-      this.isDualHand = false;
       this.paddles.primary.targetX = Math.max(
         this.paddles.primary.width / 2,
         Math.min(GAME_CONFIG.CANVAS_WIDTH - this.paddles.primary.width / 2, x)
@@ -223,11 +205,7 @@ export class GameEngine {
     this.notify();
   }
 
-  private handleHandTrackingUpdate(
-    hands: HandData[],
-    leftHand: HandData | null,
-    rightHand: HandData | null
-  ) {
+  private handleHandTrackingUpdate(hands: HandData[]) {
     // If user touched screen or moved mouse recently (<1.2s), prioritize direct touch/mouse
     if (performance.now() - this.lastDirectInputTime < 1200) {
       return;
@@ -239,95 +217,22 @@ export class GameEngine {
 
     this.activeInput = 'webcam';
     const width = GAME_CONFIG.CANVAS_WIDTH;
+    const hand = hands[0];
 
-    // Dual-hand mode active if 2 hands or distinctly left/right hands detected
-    this.isDualHand = hands.length >= 2 || (leftHand !== null && rightHand !== null);
+    const posX = hand.palmCenter.x * width;
+    this.paddles.primary.targetX = Math.max(
+      this.paddles.primary.width / 2,
+      Math.min(width - this.paddles.primary.width / 2, posX)
+    );
+    this.paddles.primary.targetAngle = hand.tilt;
 
-    if (this.isDualHand) {
-      if (leftHand) {
-        const posX = leftHand.palmCenter.x * width;
-        this.paddles.left.targetX = Math.max(
-          this.paddles.left.width / 2,
-          Math.min(width * 0.7, posX)
-        );
-        this.paddles.left.targetAngle = leftHand.tilt;
-        if (leftHand.isPinching || leftHand.isFist) {
-          this.paddles.left.isBoosting = true;
-          this.paddles.left.boostTimer = 0.2;
-          this.fireLaserFromPaddle(this.paddles.left);
-        }
-      }
-
-      if (rightHand) {
-        const posX = rightHand.palmCenter.x * width;
-        this.paddles.right.targetX = Math.max(
-          width * 0.3,
-          Math.min(width - this.paddles.right.width / 2, posX)
-        );
-        this.paddles.right.targetAngle = rightHand.tilt;
-        if (rightHand.isPinching || rightHand.isFist) {
-          this.paddles.right.isBoosting = true;
-          this.paddles.right.boostTimer = 0.2;
-          this.fireLaserFromPaddle(this.paddles.right);
-        }
-      }
-
-      // Check Clap / Proximity Gesture
-      if (leftHand && rightHand && this.clapCooldown <= 0) {
-        if (GestureRecognizer.detectClap(leftHand, rightHand)) {
-          this.triggerClapEMP();
-        }
-      }
-    } else {
-      // Single Hand Mode
-      const primaryHand = hands[0];
-      const posX = primaryHand.palmCenter.x * width;
-      this.paddles.primary.targetX = Math.max(
-        this.paddles.primary.width / 2,
-        Math.min(width - this.paddles.primary.width / 2, posX)
-      );
-      this.paddles.primary.targetAngle = primaryHand.tilt;
-
-      if (primaryHand.isPinching || primaryHand.isFist) {
-        this.paddles.primary.isBoosting = true;
-        this.paddles.primary.boostTimer = 0.2;
-        this.fireLaserFromPaddle(this.paddles.primary);
-      }
+    if (hand.isPinching || hand.isFist) {
+      this.paddles.primary.isBoosting = true;
+      this.paddles.primary.boostTimer = 0.25;
+      this.fireLaserFromPaddle(this.paddles.primary);
     }
 
     this.notify();
-  }
-
-  private triggerClapEMP() {
-    this.clapCooldown = 2.0; // 2s cooldown
-    soundSynth.playClapEMP();
-    this.particles.triggerScreenShake(10);
-
-    const midX = (this.paddles.left.x + this.paddles.right.x) / 2;
-    const midY = (this.paddles.left.y + this.paddles.right.y) / 2;
-    this.particles.emitShockwave(midX, midY, '#ffe600', 90);
-    this.particles.emitScorePopup(midX, midY - 30, 'EMP SHOCKWAVE!', '#ffe600');
-
-    // Deflect all downwards balls upwards with speed boost
-    this.balls.forEach((ball) => {
-      if (ball.vy > 0) {
-        ball.vy = -Math.abs(ball.vy) * 1.15;
-        ball.isPlasma = true;
-        ball.plasmaTimer = 3.0;
-        this.particles.emitSparks(ball.x, ball.y, '#ffe600', 10);
-      }
-    });
-
-    // Damage all lowest row bricks
-    this.bricks.forEach((b) => {
-      if (!b.isDead && b.y > GAME_CONFIG.CANVAS_HEIGHT * 0.45) {
-        b.hp--;
-        this.particles.emitSparks(b.x + b.width / 2, b.y + b.height / 2, b.color, 6);
-        if (b.hp <= 0) {
-          this.destroyBrick(b);
-        }
-      }
-    });
   }
 
   public startGame(mode: GameMode = 'arcade', stage: number = 1) {
@@ -346,6 +251,7 @@ export class GameEngine {
     this.powerUps = [];
     this.lasers = [];
     this.particles.clear();
+    this.accumulator = 0;
 
     this.loadStage(stage);
     this.startCountdown();
@@ -370,7 +276,7 @@ export class GameEngine {
         id: 'ai',
         x: GAME_CONFIG.CANVAS_WIDTH / 2,
         y: GAME_CONFIG.PADDLE.AI_Y_POSITION,
-        width: GAME_CONFIG.PADDLE.DEFAULT_WIDTH * 1.3,
+        width: 140,
         height: GAME_CONFIG.PADDLE.HEIGHT,
         targetX: GAME_CONFIG.CANVAS_WIDTH / 2,
         targetY: GAME_CONFIG.PADDLE.AI_Y_POSITION,
@@ -394,7 +300,7 @@ export class GameEngine {
     this.balls = [];
     const baseSpeed = GAME_CONFIG.BALL.INITIAL_SPEED + (this.stats.stage - 1) * 0.25;
 
-    const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.6;
+    const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.5;
     this.balls.push({
       id: `ball_${Date.now()}`,
       x: GAME_CONFIG.CANVAS_WIDTH / 2,
@@ -477,12 +383,7 @@ export class GameEngine {
   }
 
   public fireLasers() {
-    if (this.isDualHand) {
-      this.fireLaserFromPaddle(this.paddles.left);
-      this.fireLaserFromPaddle(this.paddles.right);
-    } else {
-      this.fireLaserFromPaddle(this.paddles.primary);
-    }
+    this.fireLaserFromPaddle(this.paddles.primary);
   }
 
   private fireLaserFromPaddle(paddle: Paddle) {
@@ -499,7 +400,7 @@ export class GameEngine {
     const halfW = paddle.width / 2;
     this.lasers.push({
       id: `laser_${Date.now()}_1`,
-      x: paddle.x - halfW + 6,
+      x: paddle.x - halfW + 8,
       y: paddle.y - paddle.height,
       vy: -GAME_CONFIG.LASER.SPEED,
       width: GAME_CONFIG.LASER.WIDTH,
@@ -509,7 +410,7 @@ export class GameEngine {
 
     this.lasers.push({
       id: `laser_${Date.now()}_2`,
-      x: paddle.x + halfW - 6,
+      x: paddle.x + halfW - 8,
       y: paddle.y - paddle.height,
       vy: -GAME_CONFIG.LASER.SPEED,
       width: GAME_CONFIG.LASER.WIDTH,
@@ -522,6 +423,7 @@ export class GameEngine {
     if (this.isRunning) return;
     this.isRunning = true;
     this.lastTime = performance.now();
+    this.accumulator = 0;
     this.loop();
   }
 
@@ -534,23 +436,31 @@ export class GameEngine {
     musicSynth.stop();
   }
 
+  // Fixed Timestep Game Loop (Locked 60Hz Physics across all displays 60Hz, 120Hz, 144Hz, 240Hz)
   private loop = () => {
     if (!this.isRunning) return;
 
     const now = performance.now();
-    const dt = Math.min((now - this.lastTime) / 1000, 0.1);
+    let frameTime = (now - this.lastTime) / 1000;
+    if (frameTime > 0.1) frameTime = 0.1; // clamp to prevent spiral of death on tab freeze
     this.lastTime = now;
 
     if (this.state === 'playing') {
-      this.update(dt);
+      this.accumulator += frameTime;
+      while (this.accumulator >= this.FIXED_TIMESTEP) {
+        this.update(this.FIXED_TIMESTEP);
+        this.accumulator -= this.FIXED_TIMESTEP;
+      }
+    } else {
+      this.accumulator = 0;
     }
 
-    // Always render canvas
+    // Always render canvas at native display refresh rate
     const activeHands = handTracker.getState().hands;
     this.renderer.render(
       this.state,
       this.paddles,
-      this.isDualHand,
+      false, // Single hand paddle mode
       this.balls,
       this.bricks,
       this.powerUps,
@@ -567,10 +477,9 @@ export class GameEngine {
   private update(dt: number) {
     this.stats.timeElapsed += dt;
 
-    if (this.clapCooldown > 0) this.clapCooldown -= dt;
     if (this.laserFireCooldown > 0) this.laserFireCooldown -= dt;
 
-    // 1. Smooth Paddles towards targets
+    // 1. Smooth Primary Paddle towards target
     this.updatePaddles(dt);
 
     // 2. AI Paddle Logic (Duel Mode)
@@ -609,25 +518,21 @@ export class GameEngine {
 
   private updatePaddles(dt: number) {
     const lerpAlpha = 1 - Math.exp(-22 * dt);
-    const updatePad = (p: Paddle) => {
-      p.x += (p.targetX - p.x) * lerpAlpha;
-      p.angle += (p.targetAngle - p.angle) * lerpAlpha;
-      if (p.boostTimer > 0) {
-        p.boostTimer -= dt;
-        if (p.boostTimer <= 0) p.isBoosting = false;
-      }
-      if (p.laserCooldown > 0) p.laserCooldown -= dt;
-      if (p.powerWideTimer > 0) {
-        p.powerWideTimer -= dt;
-        p.width = GAME_CONFIG.PADDLE.WIDE_WIDTH;
-      } else {
-        p.width = GAME_CONFIG.PADDLE.DEFAULT_WIDTH;
-      }
-    };
-
-    updatePad(this.paddles.left);
-    updatePad(this.paddles.right);
-    updatePad(this.paddles.primary);
+    const p = this.paddles.primary;
+    
+    p.x += (p.targetX - p.x) * lerpAlpha;
+    p.angle += (p.targetAngle - p.angle) * lerpAlpha;
+    if (p.boostTimer > 0) {
+      p.boostTimer -= dt;
+      if (p.boostTimer <= 0) p.isBoosting = false;
+    }
+    if (p.laserCooldown > 0) p.laserCooldown -= dt;
+    if (p.powerWideTimer > 0) {
+      p.powerWideTimer -= dt;
+      p.width = 190;
+    } else {
+      p.width = 140;
+    }
   }
 
   private updateAIPaddle() {
@@ -660,8 +565,6 @@ export class GameEngine {
         powerUpChanged = true;
 
         if (type === 'wide') {
-          this.paddles.left.powerWideTimer = 0;
-          this.paddles.right.powerWideTimer = 0;
           this.paddles.primary.powerWideTimer = 0;
         } else if (type === 'shield') {
           this.bottomShieldActive = false;
@@ -710,22 +613,13 @@ export class GameEngine {
       const item = this.powerUps[i];
       item.y += item.vy;
 
-      const testPaddles = this.isDualHand
-        ? [this.paddles.left, this.paddles.right]
-        : [this.paddles.primary];
-
-      let collected = false;
-      for (const pad of testPaddles) {
-        if (Physics.checkPowerUpPaddleCollision(item, pad)) {
-          collected = true;
-          this.activatePowerUp(item.type, pad);
-          this.particles.emitShockwave(item.x, item.y, item.color, 35);
-          this.particles.emitScorePopup(item.x, item.y - 15, item.name, item.color);
-          break;
-        }
-      }
-
-      if (collected || item.y > GAME_CONFIG.CANVAS_HEIGHT + 30) {
+      const pad = this.paddles.primary;
+      if (Physics.checkPowerUpPaddleCollision(item, pad)) {
+        this.activatePowerUp(item.type, pad);
+        this.particles.emitShockwave(item.x, item.y, item.color, 35);
+        this.particles.emitScorePopup(item.x, item.y - 15, item.name, item.color);
+        this.powerUps.splice(i, 1);
+      } else if (item.y > GAME_CONFIG.CANVAS_HEIGHT + 30) {
         this.powerUps.splice(i, 1);
       }
     }
@@ -767,8 +661,6 @@ export class GameEngine {
       this.stats.lives = Math.min(this.stats.maxLives + 1, this.stats.lives + 1);
       this.particles.emitScorePopup(paddle.x, paddle.y - 40, '+1 LIFE!', '#ec4899');
     } else if (type === 'wide') {
-      this.paddles.left.powerWideTimer = GAME_CONFIG.POWERUPS.DURATION / 1000;
-      this.paddles.right.powerWideTimer = GAME_CONFIG.POWERUPS.DURATION / 1000;
       this.paddles.primary.powerWideTimer = GAME_CONFIG.POWERUPS.DURATION / 1000;
     } else if (type === 'plasma') {
       this.balls.forEach((b) => {
@@ -859,10 +751,7 @@ export class GameEngine {
       }
 
       // 3. Paddle Collisions
-      const testPaddles = this.isDualHand
-        ? [this.paddles.left, this.paddles.right]
-        : [this.paddles.primary];
-
+      const testPaddles = [this.paddles.primary];
       if (this.paddles.ai) {
         testPaddles.push(this.paddles.ai);
       }
@@ -873,7 +762,7 @@ export class GameEngine {
           Physics.resolvePaddleBounce(ball, pad, col);
           ball.lastHitBy = pad.id === 'ai' ? 'ai' : 'player';
 
-          soundSynth.playPaddleBounce(pad.id === 'left', pad.isBoosting);
+          soundSynth.playPaddleBounce(pad.id === 'primary', pad.isBoosting);
           this.particles.emitSparks(ball.x, ball.y, pad.color, pad.isBoosting ? 10 : 5);
           this.particles.emitShockwave(ball.x, ball.y, pad.color, 20);
 

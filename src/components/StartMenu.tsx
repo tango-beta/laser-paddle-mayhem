@@ -40,7 +40,7 @@ export const StartMenu: React.FC<StartMenuProps> = ({
             MAYHEM
           </h2>
           <p className="font-sans text-sm text-slate-400 mt-2 max-w-md mx-auto">
-            Control laser paddles with your hands. Angle shots by tilting your wrists, catch power-ups, and blast through neon firewalls.
+            Control your laser paddle with your hand. Angle shots with wrist tilts, pinch to power smash, and blast through neon firewalls.
           </p>
         </div>
 

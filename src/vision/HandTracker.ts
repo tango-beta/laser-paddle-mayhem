@@ -21,10 +21,9 @@ export class HandTracker {
   // Tracking Mode: 'turbo' (ultra-fast 60 FPS motion centroid) or 'mediapipe' (21-landmark mesh)
   private trackingMode: TrackingMode = 'turbo';
 
-  // Smoothing buffers for Left and Right hands
-  private smoothedLeft: HandData | null = null;
-  private smoothedRight: HandData | null = null;
-  private smoothingFactor: number = 0.4;
+  // Smoothing buffer for Primary hand
+  private smoothedHand: HandData | null = null;
+  private smoothingFactor: number = 0.45;
 
   // Performance & FPS tracking
   private lastFpsUpdate: number = performance.now();
@@ -107,7 +106,7 @@ export class HandTracker {
             delegate: 'GPU',
           },
           runningMode: 'VIDEO',
-          numHands: 2,
+          numHands: 1, // Single primary hand
           minHandDetectionConfidence: 0.35,
           minHandPresenceConfidence: 0.35,
           minTrackingConfidence: 0.35,
@@ -130,7 +129,6 @@ export class HandTracker {
       // 1. Initialize camera stream
       await this.startCamera(deviceId);
 
-      // 2. Start Turbo tracker (instant 60 FPS) and optionally lazy-load MediaPipe
       this.state.isReady = true;
       this.state.error = null;
       this.notify();
@@ -155,7 +153,6 @@ export class HandTracker {
       this.stream = null;
     }
 
-    // Direct low-overhead camera request
     const constraints: MediaStreamConstraints = {
       video: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
@@ -215,15 +212,13 @@ export class HandTracker {
 
     if (this.video && this.video.readyState >= 2 && !this.isProcessing) {
       if (this.trackingMode === 'turbo') {
-        // Turbo tracker executes in ~0.3ms directly on video frame
         const result = motionTracker.processVideo(this.video, this.mirror);
         this.state.hands = result.hands;
-        this.state.leftHand = result.leftHand;
-        this.state.rightHand = result.rightHand;
+        this.state.leftHand = null;
+        this.state.rightHand = result.primaryHand;
         this.state.isDetecting = result.hands.length > 0;
         this.notify();
       } else if (this.trackingMode === 'mediapipe' && this.landmarker && this.offscreenCtx && this.offscreenCanvas) {
-        // MediaPipe mode with downscaling
         this.isProcessing = true;
         try {
           this.offscreenCtx.drawImage(this.video, 0, 0, this.downscaleWidth, this.downscaleHeight);
@@ -257,77 +252,46 @@ export class HandTracker {
     landmarks: Array<Array<{ x: number; y: number; z: number }>>;
     handedness: Array<Array<{ displayName?: string; categoryName?: string; score?: number }>>;
   }) {
-    const rawHands: HandData[] = [];
     const hasLandmarks = results.landmarks && results.landmarks.length > 0;
 
     if (hasLandmarks) {
-      for (let i = 0; i < results.landmarks.length; i++) {
-        const rawLandmarks = results.landmarks[i];
-        const handednessCategory = results.handedness?.[i]?.[0];
-        
-        let detectedHand = (handednessCategory?.categoryName || handednessCategory?.displayName || (i === 0 ? 'Right' : 'Left')) as 'Left' | 'Right';
-        
-        if (this.mirror) {
-          detectedHand = detectedHand === 'Left' ? 'Right' : 'Left';
-        }
+      const rawLandmarks = results.landmarks[0];
+      const landmarks: HandLandmark[] = rawLandmarks.map((lm) => ({
+        x: this.mirror ? 1.0 - lm.x : lm.x,
+        y: lm.y,
+        z: lm.z,
+      }));
 
-        const landmarks: HandLandmark[] = rawLandmarks.map((lm) => ({
-          x: this.mirror ? 1.0 - lm.x : lm.x,
-          y: lm.y,
-          z: lm.z,
-        }));
+      const scale = GestureRecognizer.calculateHandScale(landmarks);
+      const palmCenter = GestureRecognizer.getPalmCenter(landmarks);
+      const tilt = GestureRecognizer.calculateTilt(landmarks);
+      const { isPinching, distance: pinchDistance } = GestureRecognizer.detectPinch(landmarks, scale);
+      const isFist = GestureRecognizer.detectFist(landmarks, scale);
 
-        const scale = GestureRecognizer.calculateHandScale(landmarks);
-        const palmCenter = GestureRecognizer.getPalmCenter(landmarks);
-        const tilt = GestureRecognizer.calculateTilt(landmarks);
-        const { isPinching, distance: pinchDistance } = GestureRecognizer.detectPinch(landmarks, scale);
-        const isFist = GestureRecognizer.detectFist(landmarks, scale);
+      const rawHand: HandData = {
+        handedness: 'Right',
+        landmarks,
+        palmCenter,
+        indexTip: { x: landmarks[8].x, y: landmarks[8].y },
+        thumbTip: { x: landmarks[4].x, y: landmarks[4].y },
+        wrist: { x: landmarks[0].x, y: landmarks[0].y },
+        tilt,
+        isPinching,
+        isFist,
+        pinchDistance,
+        velocity: { x: 0, y: 0 },
+        rawScore: 0.95,
+      };
 
-        rawHands.push({
-          handedness: detectedHand,
-          landmarks,
-          palmCenter,
-          indexTip: { x: landmarks[8].x, y: landmarks[8].y },
-          thumbTip: { x: landmarks[4].x, y: landmarks[4].y },
-          wrist: { x: landmarks[0].x, y: landmarks[0].y },
-          tilt,
-          isPinching,
-          isFist,
-          pinchDistance,
-          velocity: { x: 0, y: 0 },
-          rawScore: handednessCategory?.score ?? 0.9,
-        });
-      }
+      this.smoothedHand = this.smoothHandData(this.smoothedHand, rawHand);
+    } else {
+      this.smoothedHand = null;
     }
 
-    let leftRaw: HandData | null = null;
-    let rightRaw: HandData | null = null;
-
-    if (rawHands.length === 1) {
-      const h = rawHands[0];
-      if (h.handedness === 'Left' || h.palmCenter.x < 0.45) {
-        leftRaw = h;
-      } else {
-        rightRaw = h;
-      }
-    } else if (rawHands.length >= 2) {
-      const sorted = [...rawHands].sort((a, b) => a.palmCenter.x - b.palmCenter.x);
-      leftRaw = sorted[0];
-      rightRaw = sorted[1];
-      leftRaw.handedness = 'Left';
-      rightRaw.handedness = 'Right';
-    }
-
-    this.smoothedLeft = this.smoothHandData(this.smoothedLeft, leftRaw);
-    this.smoothedRight = this.smoothHandData(this.smoothedRight, rightRaw);
-
-    const activeHands: HandData[] = [];
-    if (this.smoothedLeft) activeHands.push(this.smoothedLeft);
-    if (this.smoothedRight) activeHands.push(this.smoothedRight);
-
+    const activeHands: HandData[] = this.smoothedHand ? [this.smoothedHand] : [];
     this.state.hands = activeHands;
-    this.state.leftHand = this.smoothedLeft;
-    this.state.rightHand = this.smoothedRight;
+    this.state.leftHand = null;
+    this.state.rightHand = this.smoothedHand;
     this.state.isDetecting = activeHands.length > 0;
     this.notify();
   }
