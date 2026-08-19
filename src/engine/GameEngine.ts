@@ -298,7 +298,7 @@ export class GameEngine {
 
   private spawnBall() {
     this.balls = [];
-    const baseSpeed = GAME_CONFIG.BALL.INITIAL_SPEED + (this.stats.stage - 1) * 0.25;
+    const baseSpeed = GAME_CONFIG.BALL.INITIAL_SPEED + (this.stats.stage - 1) * 0.08;
 
     const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.5;
     this.balls.push({

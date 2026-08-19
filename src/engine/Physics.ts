@@ -1,4 +1,5 @@
 import type { Ball, Brick, LaserBeam, Paddle, PowerUpItem } from '../types';
+import { GAME_CONFIG } from '../config/gameConfig';
 
 export class Physics {
   // Check collision between a ball and a tilted paddle
@@ -28,29 +29,14 @@ export class Physics {
     const distSq = distX * distX + distY * distY;
 
     if (distSq <= ball.radius * ball.radius) {
-      // Collision detected! Calculate normal in local space
-      let localNormX = distX;
-      let localNormY = distY;
-      const len = Math.sqrt(localNormX * localNormX + localNormY * localNormY);
-
-      if (len > 0) {
-        localNormX /= len;
-        localNormY /= len;
-      } else {
-        localNormY = -1; // Default upwards
-      }
-
-      // Transform normal back to world space
-      const worldNormX = localNormX * Math.cos(paddle.angle) - localNormY * Math.sin(paddle.angle);
-      const worldNormY = localNormX * Math.sin(paddle.angle) + localNormY * Math.cos(paddle.angle);
-
-      // Impact offset across paddle (-1.0 left, 0.0 center, +1.0 right)
+      const normalX = (distX / (Math.sqrt(distSq) || 1)) * cos + (distY / (Math.sqrt(distSq) || 1)) * -sin;
+      const normalY = (distX / (Math.sqrt(distSq) || 1)) * sin + (distY / (Math.sqrt(distSq) || 1)) * cos;
       const impactOffset = Math.max(-1, Math.min(1, closestX / halfW));
 
       return {
         collided: true,
-        normalX: worldNormX,
-        normalY: worldNormY,
+        normalX,
+        normalY,
         impactOffset,
       };
     }
@@ -68,7 +54,10 @@ export class Physics {
     
     // Calculate launch angle based on paddle angle and impact offset
     const steerAngle = paddle.angle + (collision.impactOffset * (Math.PI / 3.2));
-    const currentSpeed = Math.min(ball.speed * (paddle.isBoosting ? 1.25 : 1.02), 16);
+    const currentSpeed = Math.min(
+      ball.speed * (paddle.isBoosting ? 1.12 : 1.002),
+      GAME_CONFIG.BALL.MAX_SPEED
+    );
     ball.speed = currentSpeed;
 
     if (isPlayerPaddle) {

@@ -3,9 +3,9 @@ export const GAME_CONFIG = {
   CANVAS_HEIGHT: 720,
   
   PADDLE: {
-    DEFAULT_WIDTH: 110,
-    WIDE_WIDTH: 170,
-    HEIGHT: 18,
+    DEFAULT_WIDTH: 150, // Generous, comfortable paddle for webcam & touch
+    WIDE_WIDTH: 210,
+    HEIGHT: 20,
     Y_POSITION: 650,
     AI_Y_POSITION: 70,
     COLOR_LEFT: '#ff007f',   // Neon Pink
@@ -17,10 +17,10 @@ export const GAME_CONFIG = {
   },
 
   BALL: {
-    RADIUS: 8,
-    INITIAL_SPEED: 7.5,
-    MAX_SPEED: 16.0,
-    SPEED_INCREMENT: 0.05,
+    RADIUS: 9,
+    INITIAL_SPEED: 3.8, // Relaxed, approachable speed for hand tracking
+    MAX_SPEED: 6.8,
+    SPEED_INCREMENT: 0.005,
     COLOR_DEFAULT: '#00f0ff',
     COLOR_PLASMA: '#ff0055',
     COLOR_BOOST: '#ffe600',
@@ -41,10 +41,10 @@ export const GAME_CONFIG = {
   },
 
   POWERUPS: {
-    DROP_CHANCE: 0.32,
-    FALL_SPEED: 2.4,
-    RADIUS: 14,
-    DURATION: 12000, // 12 seconds active duration
+    DROP_CHANCE: 0.35,
+    FALL_SPEED: 1.5, // Slow, comfortable falling speed to easily catch
+    RADIUS: 15,
+    DURATION: 14000, // 14 seconds active duration
     TYPES: {
       multiball: { name: 'MULTI-BALL', color: '#ffe600', icon: '⚡' },
       laser: { name: 'LASER CANNONS', color: '#ff007f', icon: '🔫' },
@@ -57,15 +57,15 @@ export const GAME_CONFIG = {
   },
 
   LASER: {
-    SPEED: 12,
+    SPEED: 8.5,
     WIDTH: 4,
     HEIGHT: 18,
-    COOLDOWN: 140, // ms between laser bursts
+    COOLDOWN: 150, // ms between laser bursts
     COLOR: '#00f0ff',
   },
 
   SCORING: {
-    COMBO_TIMEOUT_MS: 3200,
+    COMBO_TIMEOUT_MS: 3800,
     MAX_MULTIPLIER: 8,
   }
 };
