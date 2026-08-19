@@ -6,6 +6,7 @@ import type {
   GameState,
   GameStats,
   HandData,
+  InputSource,
   LaserBeam,
   Paddle,
   PowerUpItem,
@@ -21,7 +22,12 @@ import { ParticleSystem } from './ParticleSystem';
 import { LevelManager } from './Levels';
 import { Renderer } from './Renderer';
 
-export type GameEngineCallback = (stats: GameStats, state: GameState, activePowerUps: ActivePowerUp[]) => void;
+export type GameEngineCallback = (
+  stats: GameStats,
+  state: GameState,
+  activePowerUps: ActivePowerUp[],
+  activeInput: InputSource
+) => void;
 
 export class GameEngine {
   private renderer: Renderer;
@@ -33,6 +39,8 @@ export class GameEngine {
   // Game States
   public state: GameState = 'menu';
   public mode: GameMode = 'arcade';
+  public activeInput: InputSource = 'webcam';
+  private lastDirectInputTime: number = 0;
   private countdownTimer: number = 3;
   private countdownInterval: number | null = null;
 
@@ -78,7 +86,7 @@ export class GameEngine {
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
-    this.particles = new ParticleSystem(300);
+    this.particles = new ParticleSystem(60);
 
     // Initialize Paddles
     this.paddles = {
@@ -154,18 +162,55 @@ export class GameEngine {
 
   public subscribe(cb: GameEngineCallback): () => void {
     this.listeners.add(cb);
-    cb(this.stats, this.state, Array.from(this.activePowerUps.values()));
+    cb(this.stats, this.state, Array.from(this.activePowerUps.values()), this.activeInput);
     return () => this.listeners.delete(cb);
   }
 
   private notify() {
     this.listeners.forEach((cb) =>
-      cb(this.stats, this.state, Array.from(this.activePowerUps.values()))
+      cb(this.stats, this.state, Array.from(this.activePowerUps.values()), this.activeInput)
     );
   }
 
+  // Multi-Touch Input Handler (Supports Chromebook Touchscreens)
+  public setTouchInput(touches: Array<{ x: number; y: number }>) {
+    this.activeInput = 'touch';
+    this.lastDirectInputTime = performance.now();
+    const width = GAME_CONFIG.CANVAS_WIDTH;
+
+    if (touches.length === 1) {
+      const touch = touches[0];
+      this.isDualHand = false;
+      this.paddles.primary.targetX = Math.max(
+        this.paddles.primary.width / 2,
+        Math.min(width - this.paddles.primary.width / 2, touch.x)
+      );
+    } else if (touches.length >= 2) {
+      this.isDualHand = true;
+      const sorted = [...touches].sort((a, b) => a.x - b.x);
+      const leftTouch = sorted[0];
+      const rightTouch = sorted[1];
+
+      this.paddles.left.targetX = Math.max(
+        this.paddles.left.width / 2,
+        Math.min(width * 0.7, leftTouch.x)
+      );
+      this.paddles.right.targetX = Math.max(
+        width * 0.3,
+        Math.min(width - this.paddles.right.width / 2, rightTouch.x)
+      );
+    }
+
+    this.notify();
+  }
+
+  // Mouse / Trackpad Input Handler
   public setMouseInput(x: number, _y: number, isDown: boolean) {
+    this.activeInput = 'mouse';
+    this.lastDirectInputTime = performance.now();
+
     if (this.state === 'playing') {
+      this.isDualHand = false;
       this.paddles.primary.targetX = Math.max(
         this.paddles.primary.width / 2,
         Math.min(GAME_CONFIG.CANVAS_WIDTH - this.paddles.primary.width / 2, x)
@@ -175,6 +220,7 @@ export class GameEngine {
         this.fireLasers();
       }
     }
+    this.notify();
   }
 
   private handleHandTrackingUpdate(
@@ -182,11 +228,16 @@ export class GameEngine {
     leftHand: HandData | null,
     rightHand: HandData | null
   ) {
-    if (hands.length === 0) {
-      // Fallback: primary paddle stays at mouse position
+    // If user touched screen or moved mouse recently (<1.2s), prioritize direct touch/mouse
+    if (performance.now() - this.lastDirectInputTime < 1200) {
       return;
     }
 
+    if (hands.length === 0) {
+      return;
+    }
+
+    this.activeInput = 'webcam';
     const width = GAME_CONFIG.CANVAS_WIDTH;
 
     // Dual-hand mode active if 2 hands or distinctly left/right hands detected
@@ -243,16 +294,18 @@ export class GameEngine {
         this.fireLaserFromPaddle(this.paddles.primary);
       }
     }
+
+    this.notify();
   }
 
   private triggerClapEMP() {
     this.clapCooldown = 2.0; // 2s cooldown
     soundSynth.playClapEMP();
-    this.particles.triggerScreenShake(14);
+    this.particles.triggerScreenShake(10);
 
     const midX = (this.paddles.left.x + this.paddles.right.x) / 2;
     const midY = (this.paddles.left.y + this.paddles.right.y) / 2;
-    this.particles.emitShockwave(midX, midY, '#ffe600', 120);
+    this.particles.emitShockwave(midX, midY, '#ffe600', 90);
     this.particles.emitScorePopup(midX, midY - 30, 'EMP SHOCKWAVE!', '#ffe600');
 
     // Deflect all downwards balls upwards with speed boost
@@ -261,7 +314,7 @@ export class GameEngine {
         ball.vy = -Math.abs(ball.vy) * 1.15;
         ball.isPlasma = true;
         ball.plasmaTimer = 3.0;
-        this.particles.emitSparks(ball.x, ball.y, '#ffe600', 15);
+        this.particles.emitSparks(ball.x, ball.y, '#ffe600', 10);
       }
     });
 
@@ -269,7 +322,7 @@ export class GameEngine {
     this.bricks.forEach((b) => {
       if (!b.isDead && b.y > GAME_CONFIG.CANVAS_HEIGHT * 0.45) {
         b.hp--;
-        this.particles.emitSparks(b.x + b.width / 2, b.y + b.height / 2, b.color, 8);
+        this.particles.emitSparks(b.x + b.width / 2, b.y + b.height / 2, b.color, 6);
         if (b.hp <= 0) {
           this.destroyBrick(b);
         }
@@ -341,7 +394,7 @@ export class GameEngine {
     this.balls = [];
     const baseSpeed = GAME_CONFIG.BALL.INITIAL_SPEED + (this.stats.stage - 1) * 0.25;
 
-    const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.6; // Launch upwards with slight angle
+    const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.6;
     this.balls.push({
       id: `ball_${Date.now()}`,
       x: GAME_CONFIG.CANVAS_WIDTH / 2,
@@ -423,7 +476,7 @@ export class GameEngine {
     }
   }
 
-  private fireLasers() {
+  public fireLasers() {
     if (this.isDualHand) {
       this.fireLaserFromPaddle(this.paddles.left);
       this.fireLaserFromPaddle(this.paddles.right);
@@ -435,7 +488,6 @@ export class GameEngine {
   private fireLaserFromPaddle(paddle: Paddle) {
     if (this.laserFireCooldown > 0 || paddle.laserCooldown > 0) return;
 
-    // Check if laser ammo is active or power-up unlocked
     const hasLaserPower = this.activePowerUps.has('laser');
     if (!hasLaserPower && paddle.laserAmmoTimer <= 0) return;
 
@@ -486,7 +538,7 @@ export class GameEngine {
     if (!this.isRunning) return;
 
     const now = performance.now();
-    const dt = Math.min((now - this.lastTime) / 1000, 0.1); // Max delta 100ms
+    const dt = Math.min((now - this.lastTime) / 1000, 0.1);
     this.lastTime = now;
 
     if (this.state === 'playing') {
@@ -515,7 +567,6 @@ export class GameEngine {
   private update(dt: number) {
     this.stats.timeElapsed += dt;
 
-    // Cooldown timers
     if (this.clapCooldown > 0) this.clapCooldown -= dt;
     if (this.laserFireCooldown > 0) this.laserFireCooldown -= dt;
 
@@ -536,7 +587,7 @@ export class GameEngine {
     // 5. Update Falling Power-Ups
     this.updateFallingPowerUps();
 
-    // 6. Update Bricks (Moving obstacles & pulse)
+    // 6. Update Bricks
     this.updateBricks();
 
     // 7. Update Balls & Collisions
@@ -557,7 +608,7 @@ export class GameEngine {
   }
 
   private updatePaddles(dt: number) {
-    const lerpAlpha = 1 - Math.exp(-22 * dt); // Buttery smooth 60fps exponential decay
+    const lerpAlpha = 1 - Math.exp(-22 * dt);
     const updatePad = (p: Paddle) => {
       p.x += (p.targetX - p.x) * lerpAlpha;
       p.angle += (p.targetAngle - p.angle) * lerpAlpha;
@@ -583,7 +634,6 @@ export class GameEngine {
     const ai = this.paddles.ai;
     if (!ai) return;
 
-    // Find the closest ball heading towards AI
     let targetBall = this.balls[0];
     for (const b of this.balls) {
       if (b.vy < 0 && (!targetBall || b.y < targetBall.y)) {
@@ -598,7 +648,7 @@ export class GameEngine {
       );
     }
 
-    ai.x += (ai.targetX - ai.x) * 0.08; // AI reaction lag
+    ai.x += (ai.targetX - ai.x) * 0.08;
   }
 
   private updateActivePowerUps(dt: number) {
@@ -634,14 +684,13 @@ export class GameEngine {
       const laser = this.lasers[i];
       laser.y += laser.vy;
 
-      // Laser vs Brick collisions
       let hit = false;
       for (const brick of this.bricks) {
         if (!brick.isDead && Physics.checkLaserBrickCollision(laser, brick)) {
           hit = true;
           brick.hp--;
           soundSynth.playBrickHit(brick.type);
-          this.particles.emitSparks(laser.x, laser.y, brick.color, 6);
+          this.particles.emitSparks(laser.x, laser.y, brick.color, 4);
 
           if (brick.hp <= 0) {
             this.destroyBrick(brick);
@@ -661,7 +710,6 @@ export class GameEngine {
       const item = this.powerUps[i];
       item.y += item.vy;
 
-      // Check collision with player paddles
       const testPaddles = this.isDualHand
         ? [this.paddles.left, this.paddles.right]
         : [this.paddles.primary];
@@ -671,7 +719,7 @@ export class GameEngine {
         if (Physics.checkPowerUpPaddleCollision(item, pad)) {
           collected = true;
           this.activatePowerUp(item.type, pad);
-          this.particles.emitShockwave(item.x, item.y, item.color, 45);
+          this.particles.emitShockwave(item.x, item.y, item.color, 35);
           this.particles.emitScorePopup(item.x, item.y - 15, item.name, item.color);
           break;
         }
@@ -688,7 +736,6 @@ export class GameEngine {
     const cfg = GAME_CONFIG.POWERUPS.TYPES[type];
 
     if (type === 'multiball') {
-      // Duplicate existing balls
       const newBalls: Ball[] = [];
       this.balls.forEach((ball) => {
         for (let i = -1; i <= 1; i += 2) {
@@ -755,7 +802,6 @@ export class GameEngine {
     for (const brick of this.bricks) {
       if (brick.isDead) continue;
 
-      // Moving brick translation
       if (brick.vx !== undefined && brick.minX !== undefined && brick.maxX !== undefined) {
         brick.x += brick.vx;
         if (brick.x <= brick.minX || brick.x >= brick.maxX) {
@@ -772,32 +818,29 @@ export class GameEngine {
     for (let i = this.balls.length - 1; i >= 0; i--) {
       const ball = this.balls[i];
 
-      // Update Plasma timer
       if (ball.isPlasma) {
         ball.plasmaTimer -= dt;
         if (ball.plasmaTimer <= 0) ball.isPlasma = false;
       }
 
-      // Add Trail point
       ball.trail.push({ x: ball.x, y: ball.y, alpha: 0.7, radius: ball.radius * 0.9 });
-      if (ball.trail.length > 8) ball.trail.shift();
-      ball.trail.forEach((pt) => (pt.alpha *= 0.82));
+      if (ball.trail.length > 6) ball.trail.shift();
+      ball.trail.forEach((pt) => (pt.alpha *= 0.8));
 
-      // Move Ball
       ball.x += ball.vx;
       ball.y += ball.vy;
 
-      // 1. Wall Collisions (Left & Right)
+      // 1. Wall Collisions
       if (ball.x - ball.radius <= 0) {
         ball.x = ball.radius;
         ball.vx = Math.abs(ball.vx);
         soundSynth.playPaddleBounce(true);
-        this.particles.emitSparks(ball.x, ball.y, '#00f0ff', 6);
+        this.particles.emitSparks(ball.x, ball.y, '#00f0ff', 4);
       } else if (ball.x + ball.radius >= width) {
         ball.x = width - ball.radius;
         ball.vx = -Math.abs(ball.vx);
         soundSynth.playPaddleBounce(false);
-        this.particles.emitSparks(ball.x, ball.y, '#ff007f', 6);
+        this.particles.emitSparks(ball.x, ball.y, '#ff007f', 4);
       }
 
       // 2. Ceiling Collision
@@ -805,10 +848,9 @@ export class GameEngine {
         ball.y = ball.radius;
         ball.vy = Math.abs(ball.vy);
         soundSynth.playPaddleBounce(true);
-        this.particles.emitSparks(ball.x, ball.y, '#00f0ff', 6);
+        this.particles.emitSparks(ball.x, ball.y, '#00f0ff', 4);
 
         if (this.mode === 'duel') {
-          // Player scored past AI!
           this.stats.playerScore = (this.stats.playerScore || 0) + 1;
           this.addScore(1000);
           this.particles.emitScorePopup(ball.x, 60, 'GOAL!', '#00ff66');
@@ -832,11 +874,11 @@ export class GameEngine {
           ball.lastHitBy = pad.id === 'ai' ? 'ai' : 'player';
 
           soundSynth.playPaddleBounce(pad.id === 'left', pad.isBoosting);
-          this.particles.emitSparks(ball.x, ball.y, pad.color, pad.isBoosting ? 16 : 8);
-          this.particles.emitShockwave(ball.x, ball.y, pad.color, 25);
+          this.particles.emitSparks(ball.x, ball.y, pad.color, pad.isBoosting ? 10 : 5);
+          this.particles.emitShockwave(ball.x, ball.y, pad.color, 20);
 
           if (pad.isBoosting) {
-            this.particles.triggerScreenShake(6);
+            this.particles.triggerScreenShake(4);
             this.particles.emitScorePopup(pad.x, pad.y - 25, 'POWER SMASH!', '#ffe600');
           }
           break;
@@ -849,7 +891,6 @@ export class GameEngine {
 
         const brickCol = Physics.checkBallBrickCollision(ball, brick);
         if (brickCol && brickCol.collided) {
-          // Reflect ball unless Plasma Pierce is active
           if (!ball.isPlasma) {
             if (brickCol.side === 'top' || brickCol.side === 'bottom') {
               ball.vy = -ball.vy;
@@ -860,7 +901,7 @@ export class GameEngine {
 
           brick.hp--;
           soundSynth.playBrickHit(brick.type);
-          this.particles.emitSparks(ball.x, ball.y, brick.color, 8);
+          this.particles.emitSparks(ball.x, ball.y, brick.color, 5);
 
           if (brick.hp <= 0) {
             this.destroyBrick(brick);
@@ -869,15 +910,14 @@ export class GameEngine {
         }
       }
 
-      // 5. Bottom Floor Handling (Life loss or shield bounce)
+      // 5. Bottom Floor Handling
       if (ball.y + ball.radius >= height) {
         if (this.bottomShieldActive) {
           ball.y = height - ball.radius - 14;
           ball.vy = -Math.abs(ball.vy);
           soundSynth.playPaddleBounce(true, true);
-          this.particles.emitShockwave(ball.x, height - 10, '#a855f7', 40);
+          this.particles.emitShockwave(ball.x, height - 10, '#a855f7', 30);
         } else {
-          // Ball lost
           this.balls.splice(i, 1);
           this.stats.ballsInPlay = this.balls.length;
 
@@ -893,7 +933,6 @@ export class GameEngine {
     brick.isDead = true;
     this.stats.bricksRemaining = this.bricks.filter((b) => !b.isDead).length;
 
-    // Combo streak & score
     this.stats.combo++;
     this.stats.maxCombo = Math.max(this.stats.maxCombo, this.stats.combo);
     this.stats.multiplier = Math.min(
@@ -908,8 +947,8 @@ export class GameEngine {
     soundSynth.playBrickDestroy(brick.type === 'explosive');
     soundSynth.playCombo(this.stats.combo);
 
-    this.particles.emitSparks(brick.x + brick.width / 2, brick.y + brick.height / 2, brick.color, 16);
-    this.particles.emitShockwave(brick.x + brick.width / 2, brick.y + brick.height / 2, brick.color, 35);
+    this.particles.emitSparks(brick.x + brick.width / 2, brick.y + brick.height / 2, brick.color, 8);
+    this.particles.emitShockwave(brick.x + brick.width / 2, brick.y + brick.height / 2, brick.color, 25);
     this.particles.emitScorePopup(
       brick.x + brick.width / 2,
       brick.y,
@@ -917,10 +956,9 @@ export class GameEngine {
       brick.color
     );
 
-    // Explosive brick chain blast
     if (brick.type === 'explosive') {
-      this.particles.triggerScreenShake(10);
-      const blastRadius = 90;
+      this.particles.triggerScreenShake(8);
+      const blastRadius = 85;
       this.bricks.forEach((other) => {
         if (!other.isDead) {
           const dx = other.x + other.width / 2 - (brick.x + brick.width / 2);
@@ -935,7 +973,6 @@ export class GameEngine {
       });
     }
 
-    // Spawn Power-Up
     if (brick.powerupDrop) {
       const pCfg = GAME_CONFIG.POWERUPS.TYPES[brick.powerupDrop];
       this.powerUps.push({
@@ -958,7 +995,7 @@ export class GameEngine {
     this.stats.combo = 0;
     this.stats.multiplier = 1;
     soundSynth.playLifeLost();
-    this.particles.triggerScreenShake(12);
+    this.particles.triggerScreenShake(8);
 
     if (this.stats.lives <= 0) {
       this.state = 'gameover';
@@ -991,7 +1028,7 @@ export class GameEngine {
     if (this.bricks.every((b) => b.isDead)) {
       this.state = 'stage_cleared';
       soundSynth.playVictory();
-      this.particles.triggerScreenShake(8);
+      this.particles.triggerScreenShake(6);
       this.notify();
 
       setTimeout(() => {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import { GameEngine } from '../engine/GameEngine';
-import type { ActivePowerUp, GameMode, GameState, GameStats } from '../types';
+import type { ActivePowerUp, GameMode, GameState, GameStats, InputSource } from '../types';
 import { GAME_CONFIG } from '../config/gameConfig';
 import { handTracker } from '../vision/HandTracker';
 import { soundSynth } from '../audio/SoundSynth';
@@ -20,6 +20,7 @@ export const GameCanvas: React.FC = () => {
 
   const [gameState, setGameState] = useState<GameState>('menu');
   const [gameMode, setGameMode] = useState<GameMode>('arcade');
+  const [activeInput, setActiveInput] = useState<InputSource>('webcam');
   const [stats, setStats] = useState<GameStats>({
     score: 0,
     highScore: 0,
@@ -53,10 +54,11 @@ export const GameCanvas: React.FC = () => {
     const engine = new GameEngine(canvas);
     engineRef.current = engine;
 
-    const unsub = engine.subscribe((newStats, newState, powers) => {
+    const unsub = engine.subscribe((newStats, newState, powers, input) => {
       setStats({ ...newStats });
       setGameState(newState);
       setActivePowerUps([...powers]);
+      setActiveInput(input);
       setIsPaused(newState === 'paused');
     });
 
@@ -78,7 +80,7 @@ export const GameCanvas: React.FC = () => {
       const success = await handTracker.initialize();
       setIsInitializingCamera(false);
       if (!success) {
-        console.log('Camera init fallback to mouse');
+        console.log('Camera init fallback to mouse/touch');
       }
     }
     if (engineRef.current) {
@@ -113,8 +115,33 @@ export const GameCanvas: React.FC = () => {
     musicSynth.setMuted(nextMute);
   };
 
-  // Mouse & Touch Interaction Handlers
+  // Touchscreen Interaction Handlers (Chromebook Touchscreen Support)
+  const handleTouch = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !engineRef.current) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = GAME_CONFIG.CANVAS_WIDTH / rect.width;
+    const scaleY = GAME_CONFIG.CANVAS_HEIGHT / rect.height;
+
+    const touches = Array.from(e.touches).map((t) => ({
+      x: (t.clientX - rect.left) * scaleX,
+      y: (t.clientY - rect.top) * scaleY,
+    }));
+
+    if (touches.length > 0) {
+      engineRef.current.setTouchInput(touches);
+      // Double finger tap fires lasers
+      if (touches.length >= 2) {
+        engineRef.current.fireLasers();
+      }
+    }
+  };
+
+  // Mouse & Trackpad Interaction Handlers
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === 'touch') return; // Handled by handleTouch
+
     const canvas = canvasRef.current;
     if (!canvas || !engineRef.current) return;
 
@@ -129,6 +156,8 @@ export const GameCanvas: React.FC = () => {
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === 'touch') return; // Handled by handleTouch
+
     const canvas = canvasRef.current;
     if (!canvas || !engineRef.current) return;
 
@@ -142,7 +171,8 @@ export const GameCanvas: React.FC = () => {
     engineRef.current.setMouseInput(clientX, clientY, true);
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === 'touch') return;
     if (!engineRef.current) return;
     engineRef.current.setMouseInput(
       GAME_CONFIG.CANVAS_WIDTH / 2,
@@ -154,7 +184,7 @@ export const GameCanvas: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className="relative w-screen h-screen flex items-center justify-center bg-[#070712] overflow-hidden"
+      className="relative w-screen h-screen flex items-center justify-center bg-[#070712] overflow-hidden select-none"
     >
       {/* Game Canvas Box */}
       <div className="relative aspect-[4/3] w-full max-w-[960px] max-h-[100vh] shadow-2xl overflow-hidden rounded-none sm:rounded-xl border border-cyber-border/40">
@@ -163,10 +193,13 @@ export const GameCanvas: React.FC = () => {
           onPointerMove={handlePointerMove}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
+          onTouchStart={handleTouch}
+          onTouchMove={handleTouch}
+          onTouchEnd={handleTouch}
           className="w-full h-full block cursor-crosshair touch-none"
         />
 
-        {/* Scanlines Effect (pure visual overlay) */}
+        {/* Scanlines Effect Overlay */}
         <div className="absolute inset-0 scanlines-overlay pointer-events-none z-10" />
 
         {/* In-Game HUD overlay */}
@@ -175,6 +208,7 @@ export const GameCanvas: React.FC = () => {
             <ScoreHUD
               stats={stats}
               mode={gameMode}
+              activeInput={activeInput}
               isPaused={isPaused}
               isMuted={isMuted}
               activePowerUps={activePowerUps}

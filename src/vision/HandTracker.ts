@@ -1,6 +1,7 @@
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
-import type { HandData, HandLandmark, TrackingState } from '../types';
+import type { HandData, HandLandmark, TrackingMode, TrackingState } from '../types';
 import { GestureRecognizer } from './GestureRecognizer';
+import { motionTracker } from './MotionTracker';
 
 export type TrackingCallback = (state: TrackingState) => void;
 
@@ -14,9 +15,12 @@ export class HandTracker {
   private isInitializing: boolean = false;
   private isProcessing: boolean = false;
   private lastVideoTime: number = -1;
-  private timerId: number | null = null;
+  private animFrameId: number | null = null;
   private listeners: Set<TrackingCallback> = new Set();
   
+  // Tracking Mode: 'turbo' (ultra-fast 60 FPS motion centroid) or 'mediapipe' (21-landmark mesh)
+  private trackingMode: TrackingMode = 'turbo';
+
   // Smoothing buffers for Left and Right hands
   private smoothedLeft: HandData | null = null;
   private smoothedRight: HandData | null = null;
@@ -25,13 +29,12 @@ export class HandTracker {
   // Performance & FPS tracking
   private lastFpsUpdate: number = performance.now();
   private frameCount: number = 0;
-  private currentFps: number = 0;
+  private currentFps: number = 60;
 
-  // Configuration (Ultra-lightweight dimensions for Chromebooks)
+  // Configuration
   private mirror: boolean = true;
   private downscaleWidth: number = 240;
   private downscaleHeight: number = 180;
-  private ecoMode: boolean = true; // Default to eco mode for high performance
 
   private state: TrackingState = {
     hands: [],
@@ -41,6 +44,7 @@ export class HandTracker {
     isDetecting: false,
     fps: 0,
     activeInput: 'webcam',
+    trackingMode: 'turbo',
     error: null,
   };
 
@@ -51,8 +55,17 @@ export class HandTracker {
     this.offscreenCtx = this.offscreenCanvas.getContext('2d', { willReadFrequently: true });
   }
 
+  public setTrackingMode(mode: TrackingMode) {
+    this.trackingMode = mode;
+    this.state.trackingMode = mode;
+    this.notify();
+
+    if (mode === 'mediapipe' && !this.landmarker) {
+      this.initMediaPipe();
+    }
+  }
+
   public setEcoMode(eco: boolean) {
-    this.ecoMode = eco;
     if (eco) {
       this.downscaleWidth = 192;
       this.downscaleHeight = 144;
@@ -80,12 +93,8 @@ export class HandTracker {
     this.listeners.forEach((cb) => cb(this.state));
   }
 
-  public async initialize(deviceId?: string): Promise<boolean> {
-    if (this.isInitializing) return false;
-    this.isInitializing = true;
-
+  private async initMediaPipe(): Promise<boolean> {
     try {
-      // 1. Initialize MediaPipe Vision Tasks Resolver
       if (!this.landmarker) {
         const vision = await FilesetResolver.forVisionTasks(
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
@@ -99,22 +108,36 @@ export class HandTracker {
           },
           runningMode: 'VIDEO',
           numHands: 2,
-          minHandDetectionConfidence: 0.4,
-          minHandPresenceConfidence: 0.4,
-          minTrackingConfidence: 0.4,
+          minHandDetectionConfidence: 0.35,
+          minHandPresenceConfidence: 0.35,
+          minTrackingConfidence: 0.35,
         });
       }
+      return true;
+    } catch (e) {
+      console.warn('MediaPipe init fallback to Turbo tracker:', e);
+      this.trackingMode = 'turbo';
+      this.state.trackingMode = 'turbo';
+      return false;
+    }
+  }
 
-      // 2. Initialize Camera Stream with low resolution to save CPU
+  public async initialize(deviceId?: string): Promise<boolean> {
+    if (this.isInitializing) return false;
+    this.isInitializing = true;
+
+    try {
+      // 1. Initialize camera stream
       await this.startCamera(deviceId);
 
+      // 2. Start Turbo tracker (instant 60 FPS) and optionally lazy-load MediaPipe
       this.state.isReady = true;
       this.state.error = null;
       this.notify();
       this.startLoop();
       return true;
     } catch (err: unknown) {
-      console.warn('MediaPipe / Camera init error:', err);
+      console.warn('Camera access failed:', err);
       const errMsg = err instanceof Error ? err.message : 'Webcam access failed';
       this.state.error = errMsg;
       this.state.isReady = false;
@@ -132,13 +155,13 @@ export class HandTracker {
       this.stream = null;
     }
 
-    // Request low resolution from camera directly (huge CPU saving on low-end hardware)
+    // Direct low-overhead camera request
     const constraints: MediaStreamConstraints = {
       video: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
         width: { ideal: 320, max: 480 },
         height: { ideal: 240, max: 360 },
-        frameRate: { ideal: 24, max: 30 },
+        frameRate: { ideal: 30, max: 60 },
         facingMode: 'user',
       },
       audio: false,
@@ -170,14 +193,14 @@ export class HandTracker {
   public startLoop() {
     if (this.isRunning) return;
     this.isRunning = true;
-    this.scheduleNextInference(0);
+    this.processLoop();
   }
 
   public stop() {
     this.isRunning = false;
-    if (this.timerId !== null) {
-      clearTimeout(this.timerId);
-      this.timerId = null;
+    if (this.animFrameId !== null) {
+      cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = null;
     }
     if (this.stream) {
       this.stream.getTracks().forEach((t) => t.stop());
@@ -185,72 +208,52 @@ export class HandTracker {
     }
   }
 
-  private scheduleNextInference(delayMs: number) {
-    if (!this.isRunning) return;
-    this.timerId = window.setTimeout(this.runInference, delayMs);
-  }
-
-  // Non-blocking asynchronous inference loop
-  private runInference = () => {
+  private processLoop = () => {
     if (!this.isRunning) return;
 
-    const tStart = performance.now();
-    let nextDelay = this.ecoMode ? 50 : 35; // Target 20-28 Hz tracking
+    const now = performance.now();
 
-    if (
-      this.video &&
-      this.video.readyState >= 2 &&
-      this.landmarker &&
-      this.offscreenCtx &&
-      this.offscreenCanvas &&
-      !this.isProcessing
-    ) {
-      this.isProcessing = true;
-
-      try {
-        // Downscale video frame to offscreen canvas
-        this.offscreenCtx.drawImage(
-          this.video,
-          0,
-          0,
-          this.downscaleWidth,
-          this.downscaleHeight
-        );
-
-        const videoTime = this.video.currentTime;
-        if (videoTime !== this.lastVideoTime) {
-          this.lastVideoTime = videoTime;
-          const results = this.landmarker.detectForVideo(
-            this.offscreenCanvas,
-            tStart
-          );
-          this.handleDetectionResults(results);
+    if (this.video && this.video.readyState >= 2 && !this.isProcessing) {
+      if (this.trackingMode === 'turbo') {
+        // Turbo tracker executes in ~0.3ms directly on video frame
+        const result = motionTracker.processVideo(this.video, this.mirror);
+        this.state.hands = result.hands;
+        this.state.leftHand = result.leftHand;
+        this.state.rightHand = result.rightHand;
+        this.state.isDetecting = result.hands.length > 0;
+        this.notify();
+      } else if (this.trackingMode === 'mediapipe' && this.landmarker && this.offscreenCtx && this.offscreenCanvas) {
+        // MediaPipe mode with downscaling
+        this.isProcessing = true;
+        try {
+          this.offscreenCtx.drawImage(this.video, 0, 0, this.downscaleWidth, this.downscaleHeight);
+          const videoTime = this.video.currentTime;
+          if (videoTime !== this.lastVideoTime) {
+            this.lastVideoTime = videoTime;
+            const results = this.landmarker.detectForVideo(this.offscreenCanvas, now);
+            this.handleMediaPipeResults(results);
+          }
+        } catch {
+          // Ignore
+        } finally {
+          this.isProcessing = false;
         }
+      }
 
-        // Measure time spent in inference to adaptively throttle
-        const elapsed = performance.now() - tStart;
-        // Keep CPU usage below ~35% by sleeping at least 1.5x of inference duration
-        nextDelay = Math.max(nextDelay, Math.round(elapsed * 1.5));
-
-        // Track Tracking FPS
-        this.frameCount++;
-        if (tStart - this.lastFpsUpdate >= 1000) {
-          this.currentFps = Math.round((this.frameCount * 1000) / (tStart - this.lastFpsUpdate));
-          this.state.fps = this.currentFps;
-          this.frameCount = 0;
-          this.lastFpsUpdate = tStart;
-        }
-      } catch {
-        // Ignore transient errors
-      } finally {
-        this.isProcessing = false;
+      // Track Tracking FPS
+      this.frameCount++;
+      if (now - this.lastFpsUpdate >= 1000) {
+        this.currentFps = Math.round((this.frameCount * 1000) / (now - this.lastFpsUpdate));
+        this.state.fps = this.currentFps;
+        this.frameCount = 0;
+        this.lastFpsUpdate = now;
       }
     }
 
-    this.scheduleNextInference(nextDelay);
+    this.animFrameId = requestAnimationFrame(this.processLoop);
   };
 
-  private handleDetectionResults(results: {
+  private handleMediaPipeResults(results: {
     landmarks: Array<Array<{ x: number; y: number; z: number }>>;
     handedness: Array<Array<{ displayName?: string; categoryName?: string; score?: number }>>;
   }) {
@@ -297,7 +300,6 @@ export class HandTracker {
       }
     }
 
-    // Separate into Left and Right Hand slots & apply EMA smoothing
     let leftRaw: HandData | null = null;
     let rightRaw: HandData | null = null;
 
@@ -340,25 +342,14 @@ export class HandTracker {
       y: p1.y * (1 - alpha) + p2.y * alpha,
     });
 
-    const smoothedPalm = smoothPt(prev.palmCenter, next.palmCenter);
-    const smoothedIndex = smoothPt(prev.indexTip, next.indexTip);
-    const smoothedThumb = smoothPt(prev.thumbTip, next.thumbTip);
-    const smoothedWrist = smoothPt(prev.wrist, next.wrist);
-    const smoothedTilt = prev.tilt * (1 - alpha) + next.tilt * alpha;
-
-    const velocity = {
-      x: (smoothedPalm.x - prev.palmCenter.x) * 60,
-      y: (smoothedPalm.y - prev.palmCenter.y) * 60,
-    };
-
     return {
       ...next,
-      palmCenter: smoothedPalm,
-      indexTip: smoothedIndex,
-      thumbTip: smoothedThumb,
-      wrist: smoothedWrist,
-      tilt: smoothedTilt,
-      velocity,
+      palmCenter: smoothPt(prev.palmCenter, next.palmCenter),
+      indexTip: smoothPt(prev.indexTip, next.indexTip),
+      thumbTip: smoothPt(prev.thumbTip, next.thumbTip),
+      wrist: smoothPt(prev.wrist, next.wrist),
+      tilt: prev.tilt * (1 - alpha) + next.tilt * alpha,
+      velocity: { x: 0, y: 0 },
     };
   }
 

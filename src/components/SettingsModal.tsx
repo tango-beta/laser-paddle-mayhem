@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import type React from 'react';
-import { Camera, Check, Cpu, FlipHorizontal, X } from 'lucide-react';
+import { Camera, Check, Cpu, FlipHorizontal, Sparkles, X, Zap } from 'lucide-react';
 import { handTracker } from '../vision/HandTracker';
 import { soundSynth } from '../audio/SoundSynth';
 import { musicSynth } from '../audio/MusicSynth';
+import type { TrackingMode } from '../types';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -14,7 +15,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>('');
   const [mirror, setMirror] = useState<boolean>(true);
-  const [ecoMode, setEcoMode] = useState<boolean>(false);
+  const [trackingMode, setTrackingMode] = useState<TrackingMode>('turbo');
+  const [ecoMode, setEcoMode] = useState<boolean>(true);
   const [soundVol, setSoundVol] = useState<number>(0.5);
   const [musicVol, setMusicVol] = useState<number>(0.35);
 
@@ -26,6 +28,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           setSelectedDevice(cams[0].deviceId);
         }
       });
+      setTrackingMode(handTracker.getState().trackingMode);
     }
   }, [isOpen, selectedDevice]);
 
@@ -39,6 +42,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const handleMirrorToggle = (val: boolean) => {
     setMirror(val);
     handTracker.setMirror(val);
+  };
+
+  const handleTrackingModeChange = (mode: TrackingMode) => {
+    setTrackingMode(mode);
+    handTracker.setTrackingMode(mode);
   };
 
   const handleEcoToggle = (val: boolean) => {
@@ -57,7 +65,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   };
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-6 select-none">
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-6 select-none overflow-y-auto">
       <div className="cyber-card max-w-lg w-full p-6 rounded-2xl border border-cyber-neonCyan/40 shadow-2xl relative">
         <div className="flex items-center justify-between border-b border-cyber-border/80 pb-3 mb-4">
           <div className="flex items-center gap-2">
@@ -75,6 +83,50 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         </div>
 
         <div className="space-y-4">
+          {/* Tracking Engine Selector */}
+          <div>
+            <label className="block font-display text-xs text-slate-300 mb-1.5 uppercase">
+              Webcam Tracking Engine
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleTrackingModeChange('turbo')}
+                className={`p-3 rounded-lg border text-left transition cursor-pointer ${
+                  trackingMode === 'turbo'
+                    ? 'bg-cyber-neonGreen/10 border-cyber-neonGreen text-white'
+                    : 'bg-cyber-panel border-cyber-border text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 mb-1 text-cyber-neonGreen">
+                  <Zap size={14} />
+                  <span className="font-display text-xs font-bold">TURBO 60 FPS</span>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-tight">
+                  High-speed motion centroid. Ultra-low CPU (Recommended for Chromebooks).
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleTrackingModeChange('mediapipe')}
+                className={`p-3 rounded-lg border text-left transition cursor-pointer ${
+                  trackingMode === 'mediapipe'
+                    ? 'bg-cyber-neonCyan/10 border-cyber-neonCyan text-white'
+                    : 'bg-cyber-panel border-cyber-border text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 mb-1 text-cyber-neonCyan">
+                  <Sparkles size={14} />
+                  <span className="font-display text-xs font-bold">AI SKELETON</span>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-tight">
+                  21-landmark neural model. Best on modern high-spec PCs.
+                </p>
+              </button>
+            </div>
+          </div>
+
           {/* Camera Selection */}
           <div>
             <label className="block font-display text-xs text-slate-300 mb-1.5 uppercase">
@@ -125,8 +177,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             <div className="flex items-center gap-2.5">
               <Cpu size={18} className="text-cyber-neonYellow" />
               <div>
-                <span className="font-display text-xs text-slate-200 block">Chromebook / Low-Power Mode</span>
-                <span className="text-[11px] text-slate-400">Downscales vision input for older CPUs</span>
+                <span className="font-display text-xs text-slate-200 block">Low-Power Eco Mode</span>
+                <span className="text-[11px] text-slate-400">Downscales resolution to minimize battery & CPU</span>
               </div>
             </div>
             <button

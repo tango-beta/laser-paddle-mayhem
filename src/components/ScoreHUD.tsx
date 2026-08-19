@@ -1,10 +1,11 @@
 import type React from 'react';
-import type { ActivePowerUp, GameMode, GameStats } from '../types';
-import { Heart, Pause, Play, Volume2, VolumeX, Settings, Zap } from 'lucide-react';
+import type { ActivePowerUp, GameMode, GameStats, InputSource } from '../types';
+import { Heart, Pause, Play, Volume2, VolumeX, Settings, Zap, Video, Smartphone, MousePointer } from 'lucide-react';
 
 interface ScoreHUDProps {
   stats: GameStats;
   mode: GameMode;
+  activeInput: InputSource;
   isPaused: boolean;
   isMuted: boolean;
   activePowerUps: ActivePowerUp[];
@@ -16,6 +17,7 @@ interface ScoreHUDProps {
 export const ScoreHUD: React.FC<ScoreHUDProps> = ({
   stats,
   mode,
+  activeInput,
   isPaused,
   isMuted,
   activePowerUps,
@@ -26,7 +28,7 @@ export const ScoreHUD: React.FC<ScoreHUDProps> = ({
   return (
     <div className="absolute top-0 left-0 right-0 z-20 px-6 py-3 pointer-events-none select-none flex items-start justify-between">
       {/* Left Section: Mode, Stage & Lives */}
-      <div className="flex items-center gap-4 pointer-events-auto">
+      <div className="flex items-center gap-3 pointer-events-auto">
         <div className="cyber-card px-4 py-2 rounded-lg border border-cyber-neonCyan/30">
           <div className="flex items-center gap-2">
             <span className="font-display font-bold text-xs uppercase tracking-wider text-cyber-neonCyan">
@@ -53,9 +55,35 @@ export const ScoreHUD: React.FC<ScoreHUDProps> = ({
           </div>
         </div>
 
+        {/* Input Source Auto-Detect Badge */}
+        <div className="cyber-card px-2.5 py-1.5 rounded-lg border border-cyber-border hidden sm:flex items-center gap-1.5">
+          {activeInput === 'webcam' ? (
+            <>
+              <Video size={13} className="text-cyber-neonGreen animate-pulse" />
+              <span className="font-display text-[10px] text-cyber-neonGreen uppercase font-bold">
+                WEBCAM (TURBO 60FPS)
+              </span>
+            </>
+          ) : activeInput === 'touch' ? (
+            <>
+              <Smartphone size={13} className="text-cyber-neonCyan animate-bounce" />
+              <span className="font-display text-[10px] text-cyber-neonCyan uppercase font-bold">
+                TOUCHSCREEN DUAL-TOUCH
+              </span>
+            </>
+          ) : (
+            <>
+              <MousePointer size={13} className="text-cyber-neonYellow" />
+              <span className="font-display text-[10px] text-cyber-neonYellow uppercase font-bold">
+                MOUSE / TRACKPAD
+              </span>
+            </>
+          )}
+        </div>
+
         {/* Bricks remaining or Duel score */}
         {mode !== 'duel' ? (
-          <div className="cyber-card px-3 py-2 rounded-lg border border-cyber-border hidden sm:block">
+          <div className="cyber-card px-3 py-2 rounded-lg border border-cyber-border hidden md:block">
             <span className="text-[10px] font-display uppercase tracking-widest text-slate-400 block">
               NODES LEFT
             </span>

@@ -30,6 +30,9 @@ export interface HandData {
   rawScore: number;
 }
 
+export type InputSource = 'webcam' | 'touch' | 'mouse';
+export type TrackingMode = 'turbo' | 'mediapipe';
+
 export interface TrackingState {
   hands: HandData[];
   leftHand: HandData | null;
@@ -37,7 +40,8 @@ export interface TrackingState {
   isReady: boolean;
   isDetecting: boolean;
   fps: number;
-  activeInput: 'webcam' | 'mouse';
+  activeInput: InputSource;
+  trackingMode: TrackingMode;
   error: string | null;
 }
 
